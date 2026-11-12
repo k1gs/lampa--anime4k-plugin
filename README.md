@@ -1,0 +1,1 @@
+# lampaq-anime4k-plugin
