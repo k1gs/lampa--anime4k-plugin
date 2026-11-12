@@ -9,9 +9,10 @@ function start(initial = {}) {
     const handlers = {};
     let active;
     let selected;
+    let component;
     const lampa = {
         SettingsApi: {
-            addComponent() {},
+            addComponent(data) { component = data; },
             addParam(data) { settings[data.param.name] = data; }
         },
         Storage: {
@@ -45,6 +46,7 @@ function start(initial = {}) {
     };
     return {
         status: () => window.LampaAnime4K.status(),
+        component: () => component,
         storage,
         open: () => lampa.Select.show(parent),
         active: () => active,
@@ -54,6 +56,8 @@ function start(initial = {}) {
 }
 
 const app = start({ lampa_anime4k_enabled: true });
+assert.match(app.component().icon, /<svg\b/);
+assert.match(app.component().icon, /viewBox="0 0 40 40"/);
 assert.equal(app.status().profile, 'restore');
 app.open();
 assert.equal(app.active().items.filter(item => item.anime4kMenu).length, 1);

@@ -229,7 +229,7 @@
     let state = { mode: 'off' };
 
     function status() {
-        return { version: '0.3.0', enabled, profile, ...state, frames: session?.frames ?? 0 };
+        return { version: '0.3.1', enabled, profile, ...state, frames: session?.frames ?? 0 };
     }
     window.LampaAnime4K = Object.freeze({ status });
 
@@ -589,7 +589,15 @@
         const lampa = window.Lampa;
         if (lampa?.SettingsApi?.addComponent && lampa.SettingsApi.addParam &&
             lampa.Storage?.field && lampa.Storage.set) {
-            lampa.SettingsApi.addComponent({ component: 'lampa_anime4k', name: 'Anime4K', icon: '' });
+            lampa.SettingsApi.addComponent({
+                component: 'lampa_anime4k',
+                name: 'Anime4K',
+                icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none" aria-hidden="true">' +
+                    '<rect x="3.5" y="6" width="33" height="28" rx="4" stroke="white" stroke-width="2.5"/>' +
+                    '<path d="M11 27l6-8 4 5 3-4 5 7H11z" stroke="white" stroke-width="2.3" stroke-linejoin="round"/>' +
+                    '<path d="M27.5 10.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" fill="white"/>' +
+                    '</svg>'
+            });
             lampa.SettingsApi.addParam({
                 component: 'lampa_anime4k',
                 param: { name: key, type: 'trigger', default: false },
