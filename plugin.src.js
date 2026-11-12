@@ -6,6 +6,7 @@
 
     const fragments = /* ANIME4K_FRAGMENTS */ null;
     const restoreFragments = /* ANIME4K_RESTORE_FRAGMENTS */ null;
+    const restoreAFragments = /* ANIME4K_RESTORE_A_FRAGMENTS */ null;
     const vertex = [
         '#version 300 es', 'out vec2 uv;',
         'void main() {',
@@ -126,12 +127,13 @@
                 throw new Error('Разрешение превышает лимит WebGL');
             }
 
-            const useRestore = profile === 'restore';
+            const useRestore = profile !== 'fast';
+            const selectedRestore = profile === 'mode_a' ? restoreAFragments : restoreFragments;
             const upscaleOffset = useRestore ? restoreFragments.length : 0;
             const vertexShader = compile(gl.VERTEX_SHADER, vertex);
             try {
                 if (useRestore) {
-                    restoreFragments.forEach((fragment, index) => program(fragment, index === 7 ? 8 : 1, vertexShader));
+                    selectedRestore.forEach((fragment, index) => program(fragment, index === 7 ? 8 : 1, vertexShader));
                 }
                 fragments.forEach((fragment, index) => program(fragment, index === 4 ? 2 : 1, vertexShader));
                 program(present, 1, vertexShader);
@@ -212,7 +214,8 @@
     const profileKey = 'lampa_anime4k_profile';
     const profiles = {
         fast: 'Быстрый',
-        restore: 'Восстановление'
+        mode_a: 'Режим A',
+        restore: 'Режим B'
     };
     const selector = '.player-video__display video';
     const layoutProperties = [
@@ -229,7 +232,7 @@
     let state = { mode: 'off' };
 
     function status() {
-        return { version: '0.3.1', enabled, profile, ...state, frames: session?.frames ?? 0 };
+        return { version: '0.4.0', enabled, profile, ...state, frames: session?.frames ?? 0 };
     }
     window.LampaAnime4K = Object.freeze({ status });
 
@@ -559,8 +562,14 @@
                                 selected: enabled && profile === 'fast'
                             },
                             {
+                                title: profiles.mode_a,
+                                subtitle: 'Restore M + Upscale S — для размытого видео',
+                                value: 'mode_a',
+                                selected: enabled && profile === 'mode_a'
+                            },
+                            {
                                 title: profiles.restore,
-                                subtitle: 'Восстановление изображения и масштабирование',
+                                subtitle: 'Restore Soft M + Upscale S — для 720p',
                                 value: 'restore',
                                 selected: enabled && profile === 'restore'
                             }
