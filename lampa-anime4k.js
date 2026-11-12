@@ -67,7 +67,7 @@
         return output[0] > width * 1.2 && output[1] > height * 1.2 ? output : null;
     }
 
-    function createRenderer(canvas, width, height, output) {
+    function createRenderer(canvas, width, height, output, profile) {
         canvas.width = output[0];
         canvas.height = output[1];
 
@@ -166,9 +166,13 @@
                 throw new Error('Разрешение превышает лимит WebGL');
             }
 
+            const useRestore = profile === 'restore';
+            const upscaleOffset = useRestore ? restoreFragments.length : 0;
             const vertexShader = compile(gl.VERTEX_SHADER, vertex);
             try {
-                restoreFragments.forEach((fragment, index) => program(fragment, index === 7 ? 8 : 1, vertexShader));
+                if (useRestore) {
+                    restoreFragments.forEach((fragment, index) => program(fragment, index === 7 ? 8 : 1, vertexShader));
+                }
                 fragments.forEach((fragment, index) => program(fragment, index === 4 ? 2 : 1, vertexShader));
                 program(present, 1, vertexShader);
             } finally {
@@ -176,16 +180,16 @@
             }
 
             const input = texture(gl.RGBA8, width, height, gl.LINEAR);
-            const restoreFeatures = Array.from({ length: 7 }, () =>
-                texture(gl.RGBA16F, width, height, gl.NEAREST));
-            const restored = texture(gl.RGBA8, width, height, gl.LINEAR);
+            const restoreFeatures = useRestore ? Array.from({ length: 7 }, () =>
+                texture(gl.RGBA16F, width, height, gl.NEAREST)) : [];
+            const restored = useRestore ? texture(gl.RGBA8, width, height, gl.LINEAR) : null;
             // Alternate targets for the four signed CNN feature maps.
             const features = [0, 1].map(() => texture(gl.RGBA16F, width, height, gl.NEAREST));
             const doubled = texture(gl.RGBA8, width * 2, height * 2, gl.LINEAR);
             framebuffer = gl.createFramebuffer();
             if (!framebuffer) throw new Error('WebGL framebuffer allocation failed');
             gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-            for (const target of [...restoreFeatures, restored, ...features, doubled]) {
+            for (const target of [...restoreFeatures, ...(restored ? [restored] : []), ...features, doubled]) {
                 attach(target);
                 if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
                     throw new Error('WebGL framebuffer incomplete');
@@ -210,25 +214,27 @@
 
                     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
                     gl.viewport(0, 0, width, height);
-                    for (let index = 0; index < 7; index++) {
-                        attach(restoreFeatures[index]);
-                        pass(index, [index === 0 ? input : restoreFeatures[index - 1]]);
+                    if (useRestore) {
+                        for (let index = 0; index < 7; index++) {
+                            attach(restoreFeatures[index]);
+                            pass(index, [index === 0 ? input : restoreFeatures[index - 1]]);
+                        }
+                        attach(restored);
+                        pass(7, [input, ...restoreFeatures]);
                     }
-                    attach(restored);
-                    pass(7, [input, ...restoreFeatures]);
 
                     for (let index = 0; index < 4; index++) {
                         attach(features[index % 2]);
-                        pass(index + 8, [index === 0 ? restored : features[(index - 1) % 2]]);
+                        pass(index + upscaleOffset, [index === 0 ? (restored || input) : features[(index - 1) % 2]]);
                     }
 
                     attach(doubled);
                     gl.viewport(0, 0, width * 2, height * 2);
-                    pass(12, [restored, features[1]]);
+                    pass(upscaleOffset + 4, [restored || input, features[1]]);
 
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                     gl.viewport(0, 0, output[0], output[1]);
-                    pass(13, [doubled]);
+                    pass(upscaleOffset + 5, [doubled]);
                     checkError();
                     fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
                     if (!fence) throw new Error('WebGL sync allocation failed');
@@ -243,6 +249,11 @@
     }
 
     const key = 'lampa_anime4k_enabled';
+    const profileKey = 'lampa_anime4k_profile';
+    const profiles = {
+        fast: 'Быстрый',
+        restore: 'Восстановление'
+    };
     const selector = '.player-video__display video';
     const layoutProperties = [
         'position', 'top', 'right', 'bottom', 'left', 'width', 'height',
@@ -251,13 +262,14 @@
         'z-index', 'border-radius', 'clip-path'
     ];
     let enabled = false;
+    let profile = 'restore';
     let started = false;
     let settings = false;
     let session;
     let state = { mode: 'off' };
 
     function status() {
-        return { version: '0.2.0', enabled, ...state, frames: session?.frames ?? 0 };
+        return { version: '0.3.0', enabled, profile, ...state, frames: session?.frames ?? 0 };
     }
     window.LampaAnime4K = Object.freeze({ status });
 
@@ -270,6 +282,22 @@
         } catch {
             return false;
         }
+    }
+
+    function readProfile() {
+        try {
+            const value = settings
+                ? window.Lampa.Storage.field(profileKey)
+                : window.localStorage.getItem(profileKey);
+            return Object.prototype.hasOwnProperty.call(profiles, value) ? value : 'restore';
+        } catch {
+            return 'restore';
+        }
+    }
+
+    function writeSetting(name, value) {
+        if (settings) window.Lampa.Storage.set(name, value);
+        else window.localStorage.setItem(name, String(value));
     }
 
     function findVideo() {
@@ -304,8 +332,11 @@
 
     function applySetting() {
         const next = readEnabled();
-        if (next === enabled) return;
+        const nextProfile = readProfile();
+        if (next === enabled && nextProfile === profile) return;
+        if (nextProfile !== profile) detach();
         enabled = next;
+        profile = nextProfile;
         if (enabled) sync();
         else {
             detach();
@@ -454,7 +485,7 @@
                     canvas.style.visibility = 'hidden';
                     video.after(canvas);
                     canvas.addEventListener('webglcontextlost', contextLost);
-                    renderer = createRenderer(canvas, width, height, output);
+                    renderer = createRenderer(canvas, width, height, output, profile);
                     sizeKey = dimensions;
                     layout();
                 }
@@ -536,6 +567,62 @@
         return { video, close, refresh, get frames() { return frames; } };
     }
 
+    function addPlayerMenu(lampa) {
+        if (!lampa.Select?.listener?.follow || !lampa.Select.show) return;
+
+        lampa.Select.listener.follow('preshow', event => {
+            const parent = event?.active;
+            const items = parent?.items;
+            if (!Array.isArray(items) ||
+                !items.some(item => item?.method === 'size') ||
+                !items.some(item => item?.method === 'speed')) return;
+
+            const previous = items.find(item => item?.anime4kMenu);
+            if (previous) {
+                previous.subtitle = enabled ? profiles[profile] : 'Выключено';
+                return;
+            }
+
+            items.push({
+                title: 'Anime4K',
+                subtitle: enabled ? profiles[profile] : 'Выключено',
+                anime4kMenu: true,
+                onSelect() {
+                    lampa.Select.show({
+                        title: 'Anime4K',
+                        items: [
+                            { title: 'Выключено', value: 'off', selected: !enabled },
+                            {
+                                title: profiles.fast,
+                                subtitle: 'Масштабирование с меньшей нагрузкой',
+                                value: 'fast',
+                                selected: enabled && profile === 'fast'
+                            },
+                            {
+                                title: profiles.restore,
+                                subtitle: 'Восстановление изображения и масштабирование',
+                                value: 'restore',
+                                selected: enabled && profile === 'restore'
+                            }
+                        ],
+                        onSelect(item) {
+                            if (item.value === 'off') writeSetting(key, false);
+                            else {
+                                writeSetting(profileKey, item.value);
+                                writeSetting(key, true);
+                            }
+                            applySetting();
+                            lampa.Select.show(parent);
+                        },
+                        onBack() {
+                            lampa.Select.show(parent);
+                        }
+                    });
+                }
+            });
+        });
+    }
+
     function init() {
         if (started) return;
         started = true;
@@ -552,12 +639,19 @@
                 },
                 onChange: () => queueMicrotask(applySetting)
             });
+            lampa.SettingsApi.addParam({
+                component: 'lampa_anime4k',
+                param: { name: profileKey, type: 'select', values: profiles, default: 'restore' },
+                field: { name: 'Режим Anime4K' },
+                onChange: () => queueMicrotask(applySetting)
+            });
             settings = true;
             lampa.Storage.listener?.follow?.('change', event => {
-                if (event.name === key) applySetting();
+                if (event.name === key || event.name === profileKey) applySetting();
             });
         }
 
+        addPlayerMenu(lampa);
         const listener = lampa?.Player?.listener;
         listener?.follow?.('start', () => {
             detach();
@@ -583,8 +677,7 @@
                 !findVideo()?.getClientRects().length) return;
             event.preventDefault();
             event.stopPropagation();
-            if (settings) lampa.Storage.set(key, !enabled);
-            else window.localStorage.setItem(key, String(!enabled));
+            writeSetting(key, !enabled);
             applySetting();
             lampa?.Noty?.show?.('Anime4K ' + (enabled ? 'включён' : 'выключен'));
         }, true);
