@@ -2,27 +2,18 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const root = new URL('./', import.meta.url);
-const restoreAShader = readFileSync(new URL('vendor/Anime4K_Restore_CNN_M.glsl', root));
-const restoreAHash = createHash('sha1').update('blob ' + restoreAShader.length + '\0').update(restoreAShader).digest('hex');
-if (restoreAHash !== '7f5ea9d87da38b7db82a5e115c5fd0980ed72f5e') {
-    throw new Error('Unexpected Anime4K restore A shader revision');
-}
-const restoreShader = readFileSync(new URL('vendor/Anime4K_Restore_CNN_Soft_M.glsl', root));
-const restoreHash = createHash('sha1').update('blob ' + restoreShader.length + '\0').update(restoreShader).digest('hex');
-if (restoreHash !== '2da72cb2bac3a62a53b7ccea51d0189e93eebaed') {
-    throw new Error('Unexpected Anime4K restore shader revision');
-}
-const shader = readFileSync(new URL('vendor/Anime4K_Upscale_CNN_x2_S.glsl', root));
-const blobHash = createHash('sha1').update('blob ' + shader.length + '\0').update(shader).digest('hex');
-if (blobHash !== 'e6ad7c218452014eaf70170cb5160e9ff427ffbe') {
-    throw new Error('Unexpected Anime4K shader revision');
-}
+const shaders = {
+    restore_s: ['Anime4K_Restore_CNN_S.glsl', '209bfbb6bd31331b09a7090e91f65be6f8b68dcf'],
+    restore_m: ['Anime4K_Restore_CNN_M.glsl', '7f5ea9d87da38b7db82a5e115c5fd0980ed72f5e'],
+    restore_l: ['Anime4K_Restore_CNN_L.glsl', 'ab59a7cb96110ac87b15902a693b8bcd4dac9570'],
+    soft_s: ['Anime4K_Restore_CNN_Soft_S.glsl', '8da70b580debd7f6a6f3abdf553821755cb33fcd'],
+    soft_m: ['Anime4K_Restore_CNN_Soft_M.glsl', '2da72cb2bac3a62a53b7ccea51d0189e93eebaed'],
+    soft_l: ['Anime4K_Restore_CNN_Soft_L.glsl', '355c77f2105fff10ffbc9c9edc361c5af2344494'],
+    upscale_s: ['Anime4K_Upscale_CNN_x2_S.glsl', 'e6ad7c218452014eaf70170cb5160e9ff427ffbe'],
+    upscale_m: ['Anime4K_Upscale_CNN_x2_M.glsl', '156c6bdd3b80a6c784ddf6655493bb35337cc0ec'],
+    upscale_l: ['Anime4K_Upscale_CNN_x2_L.glsl', '034de41f14e731c676124b78f74587d461abf14f']
+};
 
-const upstream = shader.toString('utf8');
-const [notice, ...passes] = upstream.split(/^\/\/!DESC .*$/m);
-const bindings = [
-    ['MAIN'], ['conv2d_tf'], ['conv2d_1_tf'], ['conv2d_2_tf'], ['MAIN', 'conv2d_last_tf']
-];
 function fragment(pass, names) {
     const adapters = names.map((name, unit) => [
         'uniform sampler2D input' + unit + ';',
@@ -32,36 +23,40 @@ function fragment(pass, names) {
         '#define ' + name + '_tex(p) texture(input' + unit + ', p)',
         '#define ' + name + '_texOff(p) ' + name + '_tex(uv + (p) * ' + name + '_pt)'
     ].join('\n'));
-
     return [
         '#version 300 es', 'precision highp float;', 'in vec2 uv;', 'out vec4 color;',
         ...adapters, pass.replace(/^\/\/!.*$/gm, '').trim(),
         'void main() { color = hook(); }'
     ].join('\n');
 }
-const fragments = passes.map((pass, index) => {
-    const names = [...pass.matchAll(/^\/\/!BIND (\w+)/gm)].map(match => match[1]);
-    if (names.join(' ') !== bindings[index]?.join(' ')) throw new Error('Unexpected shader bindings');
-    return fragment(pass, names);
-});
-if (fragments.length !== bindings.length) throw new Error('Unexpected pass count');
 
-const restoreBindings = [
-    ['MAIN'], ['conv2d_tf'], ['conv2d_1_tf'], ['conv2d_2_tf'],
-    ['conv2d_3_tf'], ['conv2d_4_tf'], ['conv2d_5_tf'],
-    ['MAIN', 'conv2d_tf', 'conv2d_1_tf', 'conv2d_2_tf', 'conv2d_3_tf', 'conv2d_4_tf', 'conv2d_5_tf', 'conv2d_6_tf']
-];
-function convertRestore(shaderBytes) {
-    const [, ...restorePasses] = shaderBytes.toString('utf8').split(/^\/\/!DESC .*$/m);
-    if (restorePasses.length !== restoreBindings.length) throw new Error('Unexpected restore pass count');
-    return restorePasses.map((pass, index) => {
-        const names = [...pass.matchAll(/^\/\/!BIND (\w+)/gm)].map(match => match[1]);
-        if (names.join(' ') !== restoreBindings[index].join(' ')) throw new Error('Unexpected restore bindings');
-        return fragment(pass, names);
+let notice;
+const models = {};
+for (const [name, [file, expectedHash]] of Object.entries(shaders)) {
+    const bytes = readFileSync(new URL('vendor/' + file, root));
+    const hash = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+    if (hash !== expectedHash) throw new Error('Unexpected Anime4K shader revision: ' + file);
+    const [header, ...passes] = bytes.toString('utf8').split(/^\/\/!DESC .*$/m);
+    notice ??= header;
+    const available = new Set(['MAIN']);
+    models[name] = passes.map((pass, index) => {
+        const inputs = [...pass.matchAll(/^\/\/!BIND (\w+)\s*$/gm)].map(match => match[1]);
+        const output = pass.match(/^\/\/!SAVE (\w+)\s*$/m)?.[1];
+        const width = pass.match(/^\/\/!WIDTH (.+)$/m)?.[1].trim();
+        const height = pass.match(/^\/\/!HEIGHT (.+)$/m)?.[1].trim();
+        const last = index === passes.length - 1;
+        const scale = name.startsWith('upscale_') && last ? 2 : 1;
+        if (!inputs.length || !output || inputs.some(input => !available.has(input)) ||
+            (!last && available.has(output)) || (last && output !== 'MAIN') ||
+            !/^\w+\.w(?: 2 \*)?$/.test(width) || !/^\w+\.h(?: 2 \*)?$/.test(height) ||
+            width.endsWith(' 2 *') !== (scale === 2) || height.endsWith(' 2 *') !== (scale === 2)) {
+            throw new Error('Unexpected Anime4K pass in ' + file + ' at ' + index);
+        }
+        available.add(output);
+        return { inputs, output, scale, source: fragment(pass, inputs) };
     });
+    if (!passes.length) throw new Error('No passes in ' + file);
 }
-const restoreFragments = convertRestore(restoreShader);
-const restoreAFragments = convertRestore(restoreAShader);
 
 const source = readFileSync(new URL('plugin.src.js', root), 'utf8');
 const combinedNotice = notice.replace(
@@ -69,10 +64,7 @@ const combinedNotice = notice.replace(
     '// Copyright (c) 2019-2021 bloc97\n// Copyright (c) 2026 Lampa Anime4K contributors'
 );
 const output = '// Generated by build.mjs from plugin.src.js and the upstream shader.\n'
-    + combinedNotice + source
-        .replace('/* ANIME4K_FRAGMENTS */ null', () => JSON.stringify(fragments, null, 4))
-        .replace('/* ANIME4K_RESTORE_FRAGMENTS */ null', () => JSON.stringify(restoreFragments, null, 4))
-        .replace('/* ANIME4K_RESTORE_A_FRAGMENTS */ null', () => JSON.stringify(restoreAFragments, null, 4));
+    + combinedNotice + source.replace('/* ANIME4K_MODELS */ null', () => JSON.stringify(models, null, 4));
 const bundle = new URL('lampa-anime4k.js', root);
 if (process.argv.includes('--check')) {
     if (readFileSync(bundle, 'utf8') !== output) throw new Error('Bundle is out of date. Run node build.mjs.');

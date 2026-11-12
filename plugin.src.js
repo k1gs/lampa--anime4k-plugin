@@ -4,9 +4,7 @@
 
     if (window.LampaAnime4K) return;
 
-    const fragments = /* ANIME4K_FRAGMENTS */ null;
-    const restoreFragments = /* ANIME4K_RESTORE_FRAGMENTS */ null;
-    const restoreAFragments = /* ANIME4K_RESTORE_A_FRAGMENTS */ null;
+    const models = /* ANIME4K_MODELS */ null;
     const vertex = [
         '#version 300 es', 'out vec2 uv;',
         'void main() {',
@@ -28,7 +26,7 @@
         return output[0] > width * 1.2 && output[1] > height * 1.2 ? output : null;
     }
 
-    function createRenderer(canvas, width, height, output, profile) {
+    function createRenderer(canvas, width, height, output, selectedModels) {
         canvas.width = output[0];
         canvas.height = output[1];
 
@@ -108,8 +106,8 @@
             }
         }
 
-        function pass(index, inputs) {
-            gl.useProgram(programs[index]);
+        function pass(shaderProgram, inputs) {
+            gl.useProgram(shaderProgram);
             inputs.forEach((input, unit) => {
                 gl.activeTexture(gl.TEXTURE0 + unit);
                 gl.bindTexture(gl.TEXTURE_2D, input);
@@ -127,35 +125,46 @@
                 throw new Error('Разрешение превышает лимит WebGL');
             }
 
-            const useRestore = profile !== 'fast';
-            const selectedRestore = profile === 'mode_a' ? restoreAFragments : restoreFragments;
-            const upscaleOffset = useRestore ? restoreFragments.length : 0;
-            const vertexShader = compile(gl.VERTEX_SHADER, vertex);
-            try {
-                if (useRestore) {
-                    selectedRestore.forEach((fragment, index) => program(fragment, index === 7 ? 8 : 1, vertexShader));
-                }
-                fragments.forEach((fragment, index) => program(fragment, index === 4 ? 2 : 1, vertexShader));
-                program(present, 1, vertexShader);
-            } finally {
-                gl.deleteShader(vertexShader);
-            }
-
             const input = texture(gl.RGBA8, width, height, gl.LINEAR);
-            const restoreFeatures = useRestore ? Array.from({ length: 7 }, () =>
-                texture(gl.RGBA16F, width, height, gl.NEAREST)) : [];
-            const restored = useRestore ? texture(gl.RGBA8, width, height, gl.LINEAR) : null;
-            // Alternate targets for the four signed CNN feature maps.
-            const features = [0, 1].map(() => texture(gl.RGBA16F, width, height, gl.NEAREST));
-            const doubled = texture(gl.RGBA8, width * 2, height * 2, gl.LINEAR);
             framebuffer = gl.createFramebuffer();
             if (!framebuffer) throw new Error('WebGL framebuffer allocation failed');
             gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-            for (const target of [...restoreFeatures, ...(restored ? [restored] : []), ...features, doubled]) {
-                attach(target);
-                if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-                    throw new Error('WebGL framebuffer incomplete');
-                }
+
+            function pipeline(model, main, vertexShader) {
+                const targets = { MAIN: main };
+                return model.map(step => {
+                    if (step.inputs.length > gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)) {
+                        throw new Error('Недостаточно текстурных блоков WebGL');
+                    }
+                    const inputs = step.inputs.map(name => targets[name]);
+                    if (inputs.some(item => !item)) throw new Error('Ошибка связей модели Anime4K');
+                    const last = step.output === 'MAIN';
+                    const target = texture(
+                        last ? gl.RGBA8 : gl.RGBA16F,
+                        width * step.scale, height * step.scale,
+                        last ? gl.LINEAR : gl.NEAREST
+                    );
+                    targets[step.output] = target;
+                    attach(target);
+                    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+                        throw new Error('WebGL framebuffer incomplete');
+                    }
+                    return { inputs, target, scale: step.scale, program: program(step.source, inputs.length, vertexShader) };
+                });
+            }
+
+            const vertexShader = compile(gl.VERTEX_SHADER, vertex);
+            let restoreSteps;
+            let upscaleSteps;
+            let presentProgram;
+            try {
+                restoreSteps = selectedModels.restore === 'none'
+                    ? [] : pipeline(models[selectedModels.restore], input, vertexShader);
+                const upscaleInput = restoreSteps.length ? restoreSteps[restoreSteps.length - 1].target : input;
+                upscaleSteps = pipeline(models['upscale_' + selectedModels.upscale], upscaleInput, vertexShader);
+                presentProgram = program(present, 1, vertexShader);
+            } finally {
+                gl.deleteShader(vertexShader);
             }
             checkError();
 
@@ -175,28 +184,15 @@
                     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, video);
 
                     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-                    gl.viewport(0, 0, width, height);
-                    if (useRestore) {
-                        for (let index = 0; index < 7; index++) {
-                            attach(restoreFeatures[index]);
-                            pass(index, [index === 0 ? input : restoreFeatures[index - 1]]);
-                        }
-                        attach(restored);
-                        pass(7, [input, ...restoreFeatures]);
+                    for (const step of [...restoreSteps, ...upscaleSteps]) {
+                        attach(step.target);
+                        gl.viewport(0, 0, width * step.scale, height * step.scale);
+                        pass(step.program, step.inputs);
                     }
-
-                    for (let index = 0; index < 4; index++) {
-                        attach(features[index % 2]);
-                        pass(index + upscaleOffset, [index === 0 ? (restored || input) : features[(index - 1) % 2]]);
-                    }
-
-                    attach(doubled);
-                    gl.viewport(0, 0, width * 2, height * 2);
-                    pass(upscaleOffset + 4, [restored || input, features[1]]);
 
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                     gl.viewport(0, 0, output[0], output[1]);
-                    pass(upscaleOffset + 5, [doubled]);
+                    pass(presentProgram, [upscaleSteps[upscaleSteps.length - 1].target]);
                     checkError();
                     fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
                     if (!fence) throw new Error('WebGL sync allocation failed');
@@ -212,10 +208,27 @@
 
     const key = 'lampa_anime4k_enabled';
     const profileKey = 'lampa_anime4k_profile';
+    const restoreKey = 'lampa_anime4k_restore_model';
+    const upscaleKey = 'lampa_anime4k_upscale_model';
     const profiles = {
         fast: 'Быстрый',
         mode_a: 'Режим A',
-        restore: 'Режим B'
+        restore: 'Режим B',
+        custom: 'Вручную'
+    };
+    const restoreOptions = {
+        none: 'Выключено',
+        restore_s: 'Restore S',
+        restore_m: 'Restore M',
+        restore_l: 'Restore L',
+        soft_s: 'Restore Soft S',
+        soft_m: 'Restore Soft M',
+        soft_l: 'Restore Soft L'
+    };
+    const upscaleOptions = {
+        s: 'Upscale S',
+        m: 'Upscale M',
+        l: 'Upscale L'
     };
     const selector = '.player-video__display video';
     const layoutProperties = [
@@ -226,13 +239,15 @@
     ];
     let enabled = false;
     let profile = 'restore';
+    let selectedModels = { restore: 'soft_m', upscale: 's' };
+    let changingSettings = false;
     let started = false;
     let settings = false;
     let session;
     let state = { mode: 'off' };
 
     function status() {
-        return { version: '0.4.0', enabled, profile, ...state, frames: session?.frames ?? 0 };
+        return { version: '0.5.0', enabled, profile, models: { ...selectedModels }, ...state, frames: session?.frames ?? 0 };
     }
     window.LampaAnime4K = Object.freeze({ status });
 
@@ -261,6 +276,41 @@
     function writeSetting(name, value) {
         if (settings) window.Lampa.Storage.set(name, value);
         else window.localStorage.setItem(name, String(value));
+    }
+
+    function readModel(name, options, fallback) {
+        try {
+            const value = settings
+                ? window.Lampa.Storage.field(name)
+                : window.localStorage.getItem(name);
+            return Object.prototype.hasOwnProperty.call(options, value) ? value : fallback;
+        } catch {
+            return fallback;
+        }
+    }
+
+    function modelsFor(nextProfile) {
+        if (nextProfile === 'fast') return { restore: 'none', upscale: 's' };
+        if (nextProfile === 'mode_a') return { restore: 'restore_m', upscale: 's' };
+        if (nextProfile === 'restore') return { restore: 'soft_m', upscale: 's' };
+        return {
+            restore: readModel(restoreKey, restoreOptions, 'soft_m'),
+            upscale: readModel(upscaleKey, upscaleOptions, 's')
+        };
+    }
+
+    function setManualModel(name, value) {
+        const nextModels = { ...selectedModels, [name]: value };
+        changingSettings = true;
+        try {
+            writeSetting(restoreKey, nextModels.restore);
+            writeSetting(upscaleKey, nextModels.upscale);
+            writeSetting(profileKey, 'custom');
+            writeSetting(key, true);
+        } finally {
+            changingSettings = false;
+        }
+        applySetting();
     }
 
     function findVideo() {
@@ -296,10 +346,13 @@
     function applySetting() {
         const next = readEnabled();
         const nextProfile = readProfile();
-        if (next === enabled && nextProfile === profile) return;
-        if (nextProfile !== profile) detach();
+        const nextModels = modelsFor(nextProfile);
+        const modelChanged = nextModels.restore !== selectedModels.restore || nextModels.upscale !== selectedModels.upscale;
+        if (next === enabled && nextProfile === profile && !modelChanged) return;
+        if (modelChanged) detach();
         enabled = next;
         profile = nextProfile;
+        selectedModels = nextModels;
         if (enabled) sync();
         else {
             detach();
@@ -448,7 +501,7 @@
                     canvas.style.visibility = 'hidden';
                     video.after(canvas);
                     canvas.addEventListener('webglcontextlost', contextLost);
-                    renderer = createRenderer(canvas, width, height, output, profile);
+                    renderer = createRenderer(canvas, width, height, output, selectedModels);
                     sizeKey = dimensions;
                     layout();
                 }
@@ -542,16 +595,21 @@
 
             const previous = items.find(item => item?.anime4kMenu);
             if (previous) {
-                previous.subtitle = enabled ? profiles[profile] : 'Выключено';
+                previous.subtitle = enabled ? (profile === 'custom'
+                    ? restoreOptions[selectedModels.restore] + ' + ' + upscaleOptions[selectedModels.upscale]
+                    : profiles[profile]) : 'Выключено';
                 return;
             }
 
             items.push({
                 title: 'Anime4K',
-                subtitle: enabled ? profiles[profile] : 'Выключено',
+                subtitle: enabled ? (profile === 'custom'
+                    ? restoreOptions[selectedModels.restore] + ' + ' + upscaleOptions[selectedModels.upscale]
+                    : profiles[profile]) : 'Выключено',
                 anime4kMenu: true,
                 onSelect() {
-                    lampa.Select.show({
+                    function showModes() {
+                        lampa.Select.show({
                         title: 'Anime4K',
                         items: [
                             { title: 'Выключено', value: 'off', selected: !enabled },
@@ -572,9 +630,35 @@
                                 subtitle: 'Restore Soft M + Upscale S — для 720p',
                                 value: 'restore',
                                 selected: enabled && profile === 'restore'
+                            },
+                            {
+                                title: 'Модель Restore',
+                                subtitle: restoreOptions[selectedModels.restore],
+                                value: 'select_restore'
+                            },
+                            {
+                                title: 'Модель Upscale',
+                                subtitle: upscaleOptions[selectedModels.upscale],
+                                value: 'select_upscale'
                             }
                         ],
                         onSelect(item) {
+                            if (item.value === 'select_restore' || item.value === 'select_upscale') {
+                                const modelType = item.value === 'select_restore' ? 'restore' : 'upscale';
+                                const options = modelType === 'restore' ? restoreOptions : upscaleOptions;
+                                lampa.Select.show({
+                                    title: modelType === 'restore' ? 'Модель Restore' : 'Модель Upscale',
+                                    items: Object.entries(options).map(([value, title]) => ({
+                                        title, value, selected: selectedModels[modelType] === value
+                                    })),
+                                    onSelect(model) {
+                                        setManualModel(modelType, model.value);
+                                        showModes();
+                                    },
+                                    onBack: showModes
+                                });
+                                return;
+                            }
                             if (item.value === 'off') writeSetting(key, false);
                             else {
                                 writeSetting(profileKey, item.value);
@@ -587,6 +671,8 @@
                             lampa.Select.show(parent);
                         }
                     });
+                    }
+                    showModes();
                 }
             });
         });
@@ -622,9 +708,21 @@
                 field: { name: 'Режим Anime4K' },
                 onChange: () => queueMicrotask(applySetting)
             });
+            lampa.SettingsApi.addParam({
+                component: 'lampa_anime4k',
+                param: { name: restoreKey, type: 'select', values: restoreOptions, default: 'soft_m' },
+                field: { name: 'Модель Restore', description: 'Используется в режиме «Вручную»' },
+                onChange: () => queueMicrotask(applySetting)
+            });
+            lampa.SettingsApi.addParam({
+                component: 'lampa_anime4k',
+                param: { name: upscaleKey, type: 'select', values: upscaleOptions, default: 's' },
+                field: { name: 'Модель Upscale', description: 'Используется в режиме «Вручную»' },
+                onChange: () => queueMicrotask(applySetting)
+            });
             settings = true;
             lampa.Storage.listener?.follow?.('change', event => {
-                if (event.name === key || event.name === profileKey) applySetting();
+                if (!changingSettings && [key, profileKey, restoreKey, upscaleKey].includes(event.name)) applySetting();
             });
         }
 

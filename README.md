@@ -9,8 +9,9 @@
 
 Плагин ожидает доступный HTML5 `video`, WebGL2 и расширение `EXT_color_buffer_float`. Кадры обрабатываются на устройстве пользователя. Ссылка `blob:` сама по себе не гарантирует доступ к кадрам. Доступ проверяется при загрузке кадра в WebGL.
 
-- В меню настроек плеера пункт **Anime4K** предлагает варианты **Выключено**, **Быстрый**, **Режим A** и **Режим B**. Выбор сохраняется между сеансами. В общих настройках Anime4K доступны переключатель и выбор режима.
+- В меню настроек плеера пункт **Anime4K** предлагает варианты **Выключено**, **Быстрый**, **Режим A** и **Режим B**, а также отдельный выбор моделей Restore и Upscale. Выбор сохраняется между сеансами. В общих настройках Anime4K доступны переключатель, профили и модели.
 - **Быстрый** использует Upscale CNN x2 S. **Режим A** сначала применяет Restore CNN M, а **Режим B** — Restore CNN Soft M. Оба режима затем используют Upscale CNN x2 S. Выбранный в предыдущих версиях режим «Восстановление» соответствует режиму B.
+- В ручном режиме Restore можно отключить либо выбрать Restore S/M/L или Restore Soft S/M/L. Upscale выбирается отдельно — S, M или L. При ручном выборе сохраняется и включается соответствующая комбинация. S — меньшая модель, L требует больше ресурсов видеокарты.
 - Режимы A и B используют основные шейдеры восстановления соответствующих режимов Anime4K. Это адаптированные для 1080p цепочки. Для источника 1280×720 промежуточный результат 2560×1440 уменьшается до 1920×1080.
 - Выход ограничен 1920×1080 с сохранением пропорций и увеличением не более чем в 2 раза. Например, 854×480 становится 1708×960. Источник 1080p и более крупные источники пропускаются.
 - Оригинальный шейдер включает обработку, когда увеличение больше 1,2 по обеим осям. При меньшем увеличении отображается оригинал.
@@ -25,7 +26,7 @@
 LampaAnime4K.status()
 ```
 
-Поле `version` показывает загруженную версию, `profile` — выбранный режим. Значение `mode: "anime4k"` означает, что обработанный кадр выведен на canvas. Поля `source` и `output` содержат размеры. При `mode: "original"` поле `reason` объясняет причину. Сведения об ошибке также выводятся в консоль с префиксом `[Lampa Anime4K]`.
+Поле `version` показывает загруженную версию, `profile` — выбранный режим, `models` — используемые модели Restore и Upscale. Значение `mode: "anime4k"` означает, что обработанный кадр выведен на canvas. Поля `source` и `output` содержат размеры. При `mode: "original"` поле `reason` объясняет причину. Сведения об ошибке также выводятся в консоль с префиксом `[Lampa Anime4K]`.
 
 ## Проверка в Lampaq
 
@@ -43,6 +44,6 @@ LampaAnime4K.status()
 
 Исходный код плагина находится в `plugin.src.js`, шейдеры — в `vendor/`. Команда `node build.mjs` собирает готовый `lampa-anime4k.js`, а `node build.mjs --check` проверяет соответствие сборки исходникам.
 
-Плагин распространяется под [MIT](LICENSE). Шейдеры [Restore CNN M](https://github.com/bloc97/Anime4K/blob/master/glsl/Restore/Anime4K_Restore_CNN_M.glsl), [Restore CNN Soft M](https://github.com/bloc97/Anime4K/blob/master/glsl/Restore/Anime4K_Restore_CNN_Soft_M.glsl) и [Upscale CNN x2 S](https://github.com/bloc97/Anime4K/blob/master/glsl/Upscale/Anime4K_Upscale_CNN_x2_S.glsl) принадлежат проекту bloc97/Anime4K и содержат уведомление об авторских правах и лицензию MIT.
+Плагин распространяется под [MIT](LICENSE). Шейдеры [Restore](https://github.com/bloc97/Anime4K/tree/master/glsl/Restore) и [Upscale](https://github.com/bloc97/Anime4K/tree/master/glsl/Upscale) принадлежат проекту bloc97/Anime4K и содержат уведомление об авторских правах и лицензию MIT.
 
 При реализации проверены публичные исходники Lampa, в частности [API настроек](https://github.com/yumata/lampa-source/blob/main/docs/ru/08-settings.md), [события плеера](https://github.com/yumata/lampa-source/blob/main/docs/ru/10-player.md), [HTML5-видео](https://github.com/yumata/lampa-source/blob/main/src/interaction/player/video.js) и [структура плеера](https://github.com/yumata/lampa-source/blob/main/src/templates/player/video.js). Приложения на их основе могут отличаться.

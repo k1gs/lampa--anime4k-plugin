@@ -83,7 +83,23 @@ app.active().items.find(item => item.anime4kMenu).onSelect();
 app.active().onBack();
 assert.equal(app.active().items.filter(item => item.anime4kMenu).length, 1);
 
+app.active().items.find(item => item.anime4kMenu).onSelect();
+app.active().onSelect(app.active().items.find(item => item.value === 'select_restore'));
+assert.equal(app.active().items.length, 7);
+app.active().onSelect(app.active().items.find(item => item.value === 'restore_l'));
+assert.equal(app.status().profile, 'custom');
+assert.equal(app.status().enabled, true);
+assert.equal(app.status().models.restore, 'restore_l');
+assert.equal(app.status().models.upscale, 's');
+app.active().onSelect(app.active().items.find(item => item.value === 'select_upscale'));
+assert.equal(app.active().items.length, 3);
+app.active().onSelect(app.active().items.find(item => item.value === 'l'));
+assert.equal(app.status().models.restore, 'restore_l');
+assert.equal(app.status().models.upscale, 'l');
+
 const restored = start(app.storage);
-assert.equal(restored.status().enabled, false);
-assert.equal(restored.status().profile, 'fast');
+assert.equal(restored.status().enabled, true);
+assert.equal(restored.status().profile, 'custom');
+assert.equal(restored.status().models.restore, 'restore_l');
+assert.equal(restored.status().models.upscale, 'l');
 console.log('Player menu and saved profiles passed');
